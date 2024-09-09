@@ -1,0 +1,136 @@
+---
+- name: Install Go and MinIO
+  hosts: minio
+  become: yes
+  vars:
+    minio_root_user: "minioadmin"   #minio default user
+    minio_root_password: "bQZ7*GU},4k" #minio default password
+  tasks:
+    - name: Install wget
+      apt:
+        name: wget
+        state: present
+
+    - name: Get the current system user
+      command: whoami
+      register: current_user
+
+    - name: Set the MinIO volumes path
+      set_fact:
+        minio_volumes: "/usr/local/share/"
+
+    - name: Download the latest version of Go
+      get_url:
+        url: https://go.dev/dl/go1.21.0.linux-amd64.tar.gz  # Latest Go version
+        dest: /tmp/go1.21.0.linux-amd64.tar.gz
+
+    - name: Extract Go
+      unarchive:
+        src: /tmp/go1.21.0.linux-amd64.tar.gz
+        dest: /tmp
+        remote_src: yes
+
+    - name: Move Go to /usr/local
+      command: mv /tmp/go /usr/local
+
+    - name: Set ownership of Go
+      file:
+        path: /usr/local/go
+        owner: root
+        group: root
+        recurse: yes
+
+    - name: Add Go to PATH
+      lineinfile:
+        path: /etc/profile
+        line: 'export PATH=$PATH:/usr/local/go/bin'
+        state: present
+
+    - name: Source profile
+      shell: source /etc/profile
+      args:
+        executable: /bin/bash
+
+    - name: Remove Go archive
+      file:
+        path: /tmp/go1.21.0.linux-amd64.tar.gz
+        state: absent
+
+    - name: Verify Go installation
+      command: /usr/local/go/bin/go version
+
+    - name: Download MinIO binary
+      get_url:
+        url: https://dl.min.io/server/minio/release/linux-amd64/minio
+        dest: /usr/local/bin/minio
+        mode: '0755'
+
+    - name: Create MinIO system user
+      user:
+        name: minio
+        system: yes
+        shell: /sbin/nologin
+        password_lock: yes
+        state: present
+
+    - name: Create MinIO configuration file
+      copy:
+        dest: /etc/default/minio
+        content: |
+          MINIO_ROOT_USER="{{ minio_root_user }}"
+          MINIO_ROOT_PASSWORD="{{ minio_root_password }}"
+          MINIO_VOLUMES="{{ minio_volumes }}"
+          MINIO_OPTS="-C /etc/minio --address :9000 --console-address :9001"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create necessary directories for MinIO
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: minio
+        group: minio
+        mode: '0755'
+      loop:
+        - "{{ minio_volumes }}"
+        - /etc/minio
+
+    - name: Download MinIO systemd service file
+      get_url:
+        url: https://raw.githubusercontent.com/minio/minio-service/master/linux-systemd/minio.service
+        dest: /etc/systemd/system/minio.service
+        mode: '0644'
+
+    - name: Update MinIO service file to use 'minio' user
+      replace:
+        path: /etc/systemd/system/minio.service
+        regexp: 'User=minio-user'
+        replace: 'User=minio'
+
+    - name: Update MinIO service file to use 'minio' group
+      replace:
+        path: /etc/systemd/system/minio.service
+        regexp: 'Group=minio-user'
+        replace: 'Group=minio'
+
+    - name: Reload systemd daemon
+      command: systemctl daemon-reload
+
+    - name: Enable MinIO service
+      systemd:
+        name: minio
+        enabled: yes
+
+    - name: Start MinIO service
+      systemd:
+        name: minio
+        state: started
+
+    - name: Check MinIO service status
+      command: systemctl status minio
+      register: minio_status
+
+    - name: Show MinIO service status
+      debug:
+        var: minio_status.stdout_lines
